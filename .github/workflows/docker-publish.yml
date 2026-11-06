@@ -52,3 +52,38 @@ jobs:
             NEXT_PUBLIC_SITE_URL=${{ inputs.site_url }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # 防泄漏闸门：镜像里不允许出现私有域名，canonical 必须是默认值
+      - name: Smoke test pushed image
+        run: |
+          IMG="${{ secrets.DOCKERHUB_USERNAME }}/ziwei-doushu:latest"
+          echo "测试镜像: $IMG"
+          docker run -d --name zw-smoke -p 3000:3000 "$IMG"
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -sf -o /tmp/p.html http://127.0.0.1:3000/; then ok=1; break; fi
+            sleep 2
+          done
+          if [ "$ok" != "1" ]; then
+            echo "::error::容器 60 秒内未就绪"
+            docker logs zw-smoke | tail -30
+            exit 1
+          fi
+
+          echo "页面大小: $(wc -c < /tmp/p.html) 字节"
+          echo "标题: $(grep -o '<title>[^<]*' /tmp/p.html | head -1 || true)"
+          echo "canonical: $(grep -o '<link rel="canonical" href="[^"]*"' /tmp/p.html | head -1 || true)"
+          echo "og:url: $(grep -o 'og:url" content="[^"]*' /tmp/p.html | head -1 || true)"
+
+          fail=0
+          if grep -qi 'bdemo' /tmp/p.html; then
+            echo "::error::页面中发现私有域名 bdemo"
+            fail=1
+          fi
+          if ! grep -q 'localhost:3000' /tmp/p.html; then
+            echo "::error::canonical 不是默认值，构建参数可能被污染"
+            fail=1
+          fi
+
+          docker rm -f zw-smoke >/dev/null 2>&1 || true
+          exit $fail
